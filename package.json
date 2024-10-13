@@ -1,0 +1,29 @@
+{
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  },
+  "name": "nodejs",
+  "version": "1.0.0",
+  "description": "connect googledrive",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon ./src/main.js",
+    "start": "node ./src/main.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kenny-ec/GeneracionPDF_Nodejs.git"
+  },
+  "author": "kenny_pizarro",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Kenny-ec/GeneracionPDF_Nodejs/issues"
+  },
+  "homepage": "https://github.com/Kenny-ec/GeneracionPDF_Nodejs#readme"
+}
