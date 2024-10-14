@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 import { google } from "googleapis";
 import { PassThrough } from 'stream';
 import { Readable } from 'stream';
+import fetch from 'node-fetch'; // Asegúrate de que esta línea esté presente al inicio de tu archivo
+
 
 import {
   getAuthUrl,
@@ -130,32 +132,20 @@ async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid) {
         const drive = await initializeDriveClient(auth);
 
         // Construir la URL para exportar solo la hoja específica
-        const pdfExportUrl = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=pdf&gid=${sheetGid}`;
-
-        // Descargar la hoja específica como PDF
-        /*const response = await drive.files.export(
-            {
-                fileId: fileId,
-                mimeType: 'application/pdf',
-            },
-            { responseType: 'stream' }
-        );*/
-
-        // Realizar la solicitud para descargar la hoja específica como PDF
-        const response = await fetch(pdfExportUrl, {
+        const pdfExportUrl = `https://docs.google.com/spreadsheets/d/${fileId}/export?exportFormat=pdf&format=pdf`
+                            + `&gid=${sheetGid}`;
+        
+        var options = {
             method: 'GET',
             headers: {
-                'Authorization': `Bearer ${auth.credentials.access_token}` // Asegúrate de usar el token de acceso correcto
+                'Authorization': `Bearer ${auth.credentials.access_token}`
             }
-        });
-
-        // Verificar si la solicitud fue exitosa
-        if (!response.ok) {
-            throw new Error(`Error al obtener la solicitud para descargar el PDF: ${response.statusText}`);
         }
 
-        const pdfBuffer = await response.buffer(); // Obtiene el PDF como un buffer
+        var response = await fetch(pdfExportUrl, options);
 
+        const pdfStream = response.body;
+        
         // Crear los metadatos del archivo PDF
         const pdfFileMetadata = {
             name: `${sheetName}.pdf`,
@@ -164,7 +154,7 @@ async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid) {
 
         const media = {
             mimeType: 'application/pdf',
-            body: pdfBuffer,
+            body: pdfStream,
         };
 
         // Subir el archivo PDF a Google Drive
