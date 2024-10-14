@@ -22,7 +22,7 @@ function initializeOAuth2Client() {
     );
   }
 
-const SCOPES = ["https://www.googleapis.com/auth/drive"];
+const SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"];
 
 function getAuthUrl() {
   return oauth2Client.generateAuthUrl({
@@ -45,6 +45,7 @@ async function loadSavedCredentials() {
         const creds = fs.readFileSync(token_path);
         oauth2Client.setCredentials(JSON.parse(creds));
         console.log("Credenciales cargadas desde tokens.json");
+
         return oauth2Client;
     } catch (err) {
         console.log("No se encontraron las credenciales");

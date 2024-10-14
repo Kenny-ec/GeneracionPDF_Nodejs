@@ -28,6 +28,49 @@ async function initializeDriveClient(auth) {
     }
     return driveClient;
 }
+
+// Crear una carpeta en Google Drive
+async function createFolder(drive, folderName, parentFolderId) {
+    try{
+        const fileMetadata = {
+            name: folderName,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [parentFolderId],
+        };
+    
+        const folder = await drive.files.create({
+            resource: fileMetadata,
+            fields: 'id',
+        });
+    
+        return folder.data.id; // Retornar el ID de la carpeta creada
+
+    }catch(error){
+        console.log("Error al crear carpetas de spreadsheets", error);
+    }
+    
+}
+
+// Obtener la lista de hojas de un spreadsheet
+async function getSpreadsheetSheets(auth, fileId) {
+    try{
+        const sheetsAPI = google.sheets({ version: 'v4', auth });
+        const response = await sheetsAPI.spreadsheets.get({
+            spreadsheetId: fileId,
+        });
+
+        const sheets = response.data.sheets;
+        return sheets.map(sheet => ({
+            title: sheet.properties.title, //retorna el título de la hoja
+            gid: sheet.properties.sheetId // retorna el id de la hoja
+        })); // Retorna una lista de nombres de hojas
+
+    }catch(error){
+        console.log("Error al obtener las hojas del spreadsheets: ", error);
+    }
+    
+}
+
 // Ruta para iniciar el proceso de autenticación
 app.get("/auth/google", (req, res) => {
     const authUrl = getAuthUrl();
@@ -80,47 +123,93 @@ async function listFiles(auth) {
         throw error;
     }
 }
-async function convertSpreadsheetToPDF(auth, fileId, fileName) {
+
+// Convertir cada hoja de un spreadsheet a PDF y guardarla en la carpeta correspondiente
+async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid) {
     try {
         const drive = await initializeDriveClient(auth);
 
-        // Descargar el archivo como PDF
-        const response = await drive.files.export(
-            { 
-                fileId: fileId, 
-                mimeType: 'application/pdf' 
+        // Construir la URL para exportar solo la hoja específica
+        const pdfExportUrl = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=pdf&gid=${sheetGid}`;
+
+        // Descargar la hoja específica como PDF
+        /*const response = await drive.files.export(
+            {
+                fileId: fileId,
+                mimeType: 'application/pdf',
             },
             { responseType: 'stream' }
-        );
+        );*/
 
-        const pdfStream = response.data;
+        // Realizar la solicitud para descargar la hoja específica como PDF
+        const response = await fetch(pdfExportUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${auth.credentials.access_token}` // Asegúrate de usar el token de acceso correcto
+            }
+        });
 
-        // Preparar los metadatos para crear el nuevo archivo PDF en Google Drive
+        // Verificar si la solicitud fue exitosa
+        if (!response.ok) {
+            throw new Error(`Error al obtener la solicitud para descargar el PDF: ${response.statusText}`);
+        }
+
+        const pdfBuffer = await response.buffer(); // Obtiene el PDF como un buffer
+
+        // Crear los metadatos del archivo PDF
         const pdfFileMetadata = {
-            name: `${fileName}.pdf`, // Nombre del archivo PDF
-            parents: [drive_pdf] // ID de la carpeta destino en Google Drive
+            name: `${sheetName}.pdf`,
+            parents: [folderId], // Guardar en la carpeta recién creada
         };
-
-        // Usar PassThrough para el stream de subida
-        const passThroughStream = new PassThrough();
-        pdfStream.pipe(passThroughStream);
 
         const media = {
             mimeType: 'application/pdf',
-            body: passThroughStream // Usar stream
+            body: pdfBuffer,
         };
 
         // Subir el archivo PDF a Google Drive
-        const pdfUploaded = await drive.files.create({
+        await drive.files.create({
             resource: pdfFileMetadata,
             media: media,
-            fields: 'id'
+            fields: 'id',
         });
 
-        console.log(`Archivo convertido y guardado en la carpeta PDF`);
-
+        console.log(`Hoja ${sheetName} convertida y guardada como PDF`);
     } catch (error) {
-        console.error(`Error al convertir y guardar el archivo PDF: ${fileName}`, error);
+        console.error(`Error al convertir la hoja ${sheetName} a PDF:`, error);
+    }
+}
+
+// Proceso completo de conversión de spreadsheets y hojas
+async function processSpreadsheets(auth) {
+    const driveClient = await initializeDriveClient(auth);
+    const files = await listFiles(auth);
+
+    const startTime = process.hrtime(); // Marca de tiempo inicial
+
+    try{
+         //Procesamiento paralelo
+    const conversionPromises = files.map(async (file) => {
+        const folderId = await createFolder(driveClient, file.name, drive_pdf); // Crear carpeta para cada spreadsheet
+        const sheets = await getSpreadsheetSheets(auth, file.id); // Obtener las hojas del spreadsheet
+
+        const sheetConversionPromises = sheets.map(sheet =>
+            convertSheetToPDF(auth, file.id, sheet.title, folderId, sheet.gid)
+        );
+
+        // Ejecutar la conversión de las hojas en paralelo
+        await Promise.all(sheetConversionPromises);
+    });
+
+    // Esperar a que todos los spreadsheets sean procesados
+    await Promise.all(conversionPromises);
+
+    const endTime = process.hrtime(startTime); // Marca de tiempo final
+    const elapsedTime = endTime[0] + endTime[1] / 1e9; // Tiempo en segundos
+    console.log(`Tiempo total de ejecución: ${elapsedTime.toFixed(2)} segundos`);
+
+    }catch(error){
+        console.log("Error al procesar spreadsheets: ", error);
     }
 }
 
@@ -132,23 +221,7 @@ app.listen(PORT,async () => {
     const auth = await loadSavedCredentials();
 
     if(auth){
-        const startTime = process.hrtime(); // Marca de tiempo inicial
-        const files = await listFiles(auth);
-
-        // Crear un array de promesas para la conversión de archivos
-        const conversionPromises = files.map(file => convertSpreadsheetToPDF(auth, file.id, file.name));
-
-        // Ejecutar todas las conversiones en paralelo
-        await Promise.all(conversionPromises);
-
-        //ejecutar en serie
-        /*for (const file of files) {
-            await convertSpreadsheetToPDF(auth, file.id, file.name);
-        }*/
-        const endTime = process.hrtime(startTime); // Marca de tiempo final
-        const elapsedTime = endTime[0] + endTime[1] / 1e9; // Calcular tiempo en segundos
-
-        console.log(`Tiempo de ejecución: ${elapsedTime.toFixed(2)} segundos`);
+        await processSpreadsheets(auth); // Iniciar el procesamiento
     }else{
         console.log("Necesitas autenticarte primero");
     }
