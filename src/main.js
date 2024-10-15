@@ -235,17 +235,17 @@ async function processSpreadsheets(auth) {
 
     try{
          //Procesamiento paralelo
-    const conversionPromises = files.map(async (file) => {
-        const folderId = await createFolder(driveClient, file.name, drive_pdf); // Crear carpeta para cada spreadsheet
-        const sheets = await getSpreadsheetSheets(auth, file.id, file.name); // Obtener las hojas del spreadsheet
+        const conversionPromises = files.map(async (file) => {
+            const folderId = await createFolder(driveClient, file.name, drive_pdf); // Crear carpeta para cada spreadsheet
+            const sheets = await getSpreadsheetSheets(auth, file.id, file.name); // Obtener las hojas del spreadsheet
 
-        const sheetConversionPromises = sheets.map(sheet =>
-            convertSheetToPDF(auth, file.id, sheet.title, folderId, sheet.gid, file.name)
-        );
+            const sheetConversionPromises = sheets.map(sheet =>
+                convertSheetToPDF(auth, file.id, sheet.title, folderId, sheet.gid, file.name)
+            );
 
-        // Ejecutar la conversión de las hojas en paralelo
-        await Promise.all(sheetConversionPromises);
-    });
+            // Ejecutar la conversión de las hojas en paralelo
+            await Promise.all(sheetConversionPromises);
+        });
 
     // Esperar a que todos los spreadsheets sean procesados
     await Promise.all(conversionPromises);
