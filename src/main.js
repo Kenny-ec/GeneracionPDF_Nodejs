@@ -2,8 +2,11 @@
 import express from "express";
 import dotenv from "dotenv";
 import { google } from "googleapis";
+import fs from 'fs';
+import path from 'path';
 import fetch from 'node-fetch';  //Realizar peticiones al servidor
 import Bottleneck from 'bottleneck'; // Para validar el limite de solicitudes a la Api de Google
+import winston from 'winston'; // Para los registros en logs
 
 import {
   getAuthUrl,
@@ -20,16 +23,42 @@ const drive_sheets = process.env.DRIVE_SHEETS;
 const drive_pdf = process.env.DRIVE_PDF;
 
 let driveClient;
+// Asegurarse de que la carpeta logs exista
+const logDir = 'logs';
+if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir);
+}
 
 // Configuración de Bottleneck
 const limiter = new Bottleneck({
     minTime: 110, // Añadir un retardo mínimo de 110 ms entre solicitudes
 });
 
+// Función para generar un nombre de archivo con la fecha y hora actual
+function generateLogFileName(baseName) {
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-');
+    return path.join(logDir, `${baseName}_${timestamp}.log`);
+}
+
+// Configuración de Winston para los registros
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        winston.format.printf(({ timestamp, level, message }) => `${timestamp} ${level}: ${message}`)
+    ),
+    transports: [
+        new winston.transports.Console(),
+        new winston.transports.File({ filename: generateLogFileName('Registros') }),
+        new winston.transports.File({ filename: generateLogFileName('Errores'), level: 'error'})
+    ],
+});
+
 async function initializeDriveClient(auth) {
     if (!driveClient) {
         driveClient = google.drive({ version: 'v3', auth });
-        console.log('Cliente de Google Drive inicializado');
+        logger.info('Cliente de Google Drive inicializado');
     }
     return driveClient;
 }
@@ -47,17 +76,19 @@ async function createFolder(drive, folderName, parentFolderId) {
             resource: fileMetadata,
             fields: 'id',
         });
+        `'${drive_sheets}' in parents and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`
+        logger.info(`Carpeta ${folderName} creada`);
     
         return folder.data.id; // Retornar el ID de la carpeta creada
 
     }catch(error){
-        console.log("Error al crear carpetas de spreadsheets", error);
+        logger.error("Error al crear carpetas de spreadsheets: ", error);
     }
     
 }
 
 // Obtener la lista de hojas de un spreadsheet
-async function getSpreadsheetSheets(auth, fileId) {
+async function getSpreadsheetSheets(auth, fileId, fileName) {
     try{
         const sheetsAPI = google.sheets({ version: 'v4', auth });
         const response = await sheetsAPI.spreadsheets.get({
@@ -65,13 +96,15 @@ async function getSpreadsheetSheets(auth, fileId) {
         });
 
         const sheets = response.data.sheets;
+
+        logger.info(`Se obtuvo las hojas del archivo ${fileName}`);
         return sheets.map(sheet => ({
             title: sheet.properties.title, //retorna el título de la hoja
             gid: sheet.properties.sheetId // retorna el id de la hoja
         })); // Retorna una lista de nombres de hojas
 
     }catch(error){
-        console.log("Error al obtener las hojas del spreadsheets: ", error);
+        logger.error("Error al obtener las hojas del spreadsheets: ", error);
     }
     
 }
@@ -86,15 +119,16 @@ app.get("/auth/google", (req, res) => {
 app.get("/google/redirect", async (req, res) => {
     const code = req.query.code;
     if (code) {
-    try {
-        await handleOAuthCallback(code);
-        res.send("Autenticacion exitosa! Puedes cerrar esta ventana.");
-    } catch (error) {
-        console.error("Error al recuperar el token de acceso", error);
-        res.send("Error al recuperar el token de acceso");
-    }
+        try {
+            await handleOAuthCallback(code);
+            res.send("Autenticacion exitosa! Puedes cerrar esta ventana.");
+        } catch (error) {
+            logger.error("Error al recuperar el token de acceso", error);
+            res.send("Error al recuperar el token de acceso");
+        }
     } else {
-    res.send("No se proporcionó un codigo de acceso");
+        logger.info("No se proporcionó un codigo de acceso");
+        res.send("No se proporcionó un codigo de acceso");  
     }
 });
 
@@ -114,17 +148,17 @@ async function listFiles(auth) {
 
         // Comprobar si se encontraron archivos
         if (files.length === 0) {
-            console.log("No se encontraron archivos.");
+            logger.info("No se encontraron archivos.");
             return [];
         } else {
-            console.log("Archivos encontrados:");
+            logger.info(`Archivos SpreadSheets a procesar: ${files.length}`);
             files.forEach((file) => {
-                console.log(`ID: ${file.id}, Nombre: ${file.name}`);
+                logger.info(`ID: ${file.id}, Nombre: ${file.name}`);
             });
             return files; // Devuelve la lista de archivos
         }
     } catch (error) {
-        console.error("Error al listar archivos de Google Drive:", error);
+        logger.error("Error al listar archivos de Google Drive:", error);
         throw error;
     }
 }
@@ -176,6 +210,7 @@ async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid, fi
             pdfSize = parseInt(pdfFile.data.size, 10);
 
             if (pdfSize < minSize) {
+                logger.info(`Reintentando convertir la Hoja ${sheetName} del archivo ${fileName}...`);
                 // Eliminar el archivo PDF si es menor a 10 KB, agregar limite de solicitudes
                 await limiter.schedule(()=>drive.files.delete({ fileId: pdfFile.data.id })); 
                 // Volver a crear el cuerpo del PDF
@@ -185,9 +220,9 @@ async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid, fi
 
         }while (pdfSize < minSize);        
 
-        console.log(`Hoja ${sheetName} convertida a PDF del archivo ${fileName}`);
+        logger.info(`Hoja ${sheetName} del archivo ${fileName} convertida a PDF`);
     } catch (error) {
-        console.error(`Error al convertir la hoja ${sheetName} del archivo ${fileName}:`, error);
+        logger.error(`Error al convertir la hoja ${sheetName} del archivo ${fileName}:`, error);
     }
 }
 
@@ -202,7 +237,7 @@ async function processSpreadsheets(auth) {
          //Procesamiento paralelo
     const conversionPromises = files.map(async (file) => {
         const folderId = await createFolder(driveClient, file.name, drive_pdf); // Crear carpeta para cada spreadsheet
-        const sheets = await getSpreadsheetSheets(auth, file.id); // Obtener las hojas del spreadsheet
+        const sheets = await getSpreadsheetSheets(auth, file.id, file.name); // Obtener las hojas del spreadsheet
 
         const sheetConversionPromises = sheets.map(sheet =>
             convertSheetToPDF(auth, file.id, sheet.title, folderId, sheet.gid, file.name)
@@ -217,16 +252,16 @@ async function processSpreadsheets(auth) {
 
     const endTime = process.hrtime(startTime); // Marca de tiempo final
     const elapsedTime = endTime[0] + endTime[1] / 1e9; // Tiempo en segundos
-    console.log(`Tiempo total de ejecución: ${elapsedTime.toFixed(2)} segundos`);
+    logger.info(`Tiempo total de ejecución del programa: ${elapsedTime.toFixed(2)} segundos`);
 
     }catch(error){
-        console.log("Error al procesar spreadsheets: ", error);
+        logger.error("Error al procesar spreadsheets: ", error);
     }
 }
 
 // Iniciar el servidor
 app.listen(PORT,async () => {
-    console.log(`Server ejecutandose en el puerto ${PORT}`);
+    logger.info(`Server ejecutandose en el puerto ${PORT}`);
 
     // Autenticarse
     const auth = await loadSavedCredentials();
@@ -234,7 +269,7 @@ app.listen(PORT,async () => {
     if(auth){
         await processSpreadsheets(auth); // Iniciar el procesamiento
     }else{
-        console.log("Necesitas autenticarte primero");
+        logger.info("Necesitas autenticarte primero");
     }
     
 });
