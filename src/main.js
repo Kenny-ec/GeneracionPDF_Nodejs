@@ -2,10 +2,8 @@
 import express from "express";
 import dotenv from "dotenv";
 import { google } from "googleapis";
-import { PassThrough } from 'stream';
-import { Readable } from 'stream';
-import fetch from 'node-fetch'; // Asegúrate de que esta línea esté presente al inicio de tu archivo
-
+import fetch from 'node-fetch';  //Realizar peticiones al servidor
+import Bottleneck from 'bottleneck'; // Para validar el limite de solicitudes a la Api de Google
 
 import {
   getAuthUrl,
@@ -22,6 +20,11 @@ const drive_sheets = process.env.DRIVE_SHEETS;
 const drive_pdf = process.env.DRIVE_PDF;
 
 let driveClient;
+
+// Configuración de Bottleneck
+const limiter = new Bottleneck({
+    minTime: 110, // Añadir un retardo mínimo de 110 ms entre solicitudes
+});
 
 async function initializeDriveClient(auth) {
     if (!driveClient) {
@@ -127,7 +130,7 @@ async function listFiles(auth) {
 }
 
 // Convertir cada hoja de un spreadsheet a PDF y guardarla en la carpeta correspondiente
-async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid) {
+async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid, fileName) {
     try {
         const drive = await initializeDriveClient(auth);
 
@@ -144,7 +147,7 @@ async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid) {
 
         var response = await fetch(pdfExportUrl, options);
 
-        const pdfStream = response.body;
+        var pdfStream = response.body;
         
         // Crear los metadatos del archivo PDF
         const pdfFileMetadata = {
@@ -157,16 +160,34 @@ async function convertSheetToPDF(auth, fileId, sheetName, folderId, sheetGid) {
             body: pdfStream,
         };
 
-        // Subir el archivo PDF a Google Drive
-        await drive.files.create({
-            resource: pdfFileMetadata,
-            media: media,
-            fields: 'id',
-        });
+        //inicializar variables para validación de generación del PDF
+        let pdfFile;
+        let pdfSize;
+        const minSize = 10 * 1024; // 10 KB
 
-        console.log(`Hoja ${sheetName} convertida y guardada como PDF`);
+        //intentar crear el PDF hasta que se genere correctamente
+        do{
+            pdfFile = await limiter.schedule(()=>drive.files.create({ //agrega el limite de solicitudes
+                resource: pdfFileMetadata,
+                media: media,
+                fields: 'id, size',
+            }));
+
+            pdfSize = parseInt(pdfFile.data.size, 10);
+
+            if (pdfSize < minSize) {
+                // Eliminar el archivo PDF si es menor a 10 KB, agregar limite de solicitudes
+                await limiter.schedule(()=>drive.files.delete({ fileId: pdfFile.data.id })); 
+                // Volver a crear el cuerpo del PDF
+                pdfStream = await fetch(pdfExportUrl, options);
+                media.body = pdfStream.body;
+            }
+
+        }while (pdfSize < minSize);        
+
+        console.log(`Hoja ${sheetName} convertida a PDF del archivo ${fileName}`);
     } catch (error) {
-        console.error(`Error al convertir la hoja ${sheetName} a PDF:`, error);
+        console.error(`Error al convertir la hoja ${sheetName} del archivo ${fileName}:`, error);
     }
 }
 
@@ -184,7 +205,7 @@ async function processSpreadsheets(auth) {
         const sheets = await getSpreadsheetSheets(auth, file.id); // Obtener las hojas del spreadsheet
 
         const sheetConversionPromises = sheets.map(sheet =>
-            convertSheetToPDF(auth, file.id, sheet.title, folderId, sheet.gid)
+            convertSheetToPDF(auth, file.id, sheet.title, folderId, sheet.gid, file.name)
         );
 
         // Ejecutar la conversión de las hojas en paralelo
